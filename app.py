@@ -1,33 +1,82 @@
 import pandas as pd
+import sqlite3
+from pathlib import Path
 
+# Caminhos dos arquivos
+diretorio_projeto = Path(__file__).resolve().parent
+diretorio_microdados = diretorio_projeto / 'microdados_censo_escolar_2025_' / 'microdados_censo_escolar_2025_v2' / 'dados'
+caminho_escola = diretorio_microdados / 'Tabela_Escola_2025_V2.csv'
+caminho_matricula = diretorio_microdados / 'Tabela_Matricula_2025_V2.csv'
 
-caminho_escola = '/mnt/91310fa6-7d6e-4614-bee7-fdbc148a8414/ProjetosDev/web I/pweb_20261/censoescolarweb/censo_escolar/microdados_censo_escolar_2025/dados/Tabela_Escola_2025.csv'
-caminho_matricula = '/mnt/91310fa6-7d6e-4614-bee7-fdbc148a8414/ProjetosDev/web I/pweb_20261/censoescolarweb/censo_escolar/microdados_censo_escolar_2025/dados/Tabela_Matricula_2025.csv' 
-caminho_json = '/mnt/91310fa6-7d6e-4614-bee7-fdbc148a8414/ProjetosDev/web I/pweb_20261/censoescolarweb/src/datasets/escolaspb.json'
+# Caminho onde o banco SQLite será salvo
+caminho_db = diretorio_projeto / 'dados' / 'escolas_nordeste_sudeste.db'
 
+# Colunas da tabela de escolas
 colunas_escola = [
     'NO_ENTIDADE', 'CO_ENTIDADE', 'NO_UF', 'SG_UF', 'CO_UF', 
-    'NO_MUNICIPIO', 'CO_MUNICIPIO', 'NO_MESORREGIAO', 'CO_MESORREGIAO', 
-    'NO_MICRORREGIAO', 'CO_MICRORREGIAO', 'NU_ANO_CENSO', 'NO_REGIAO', 'CO_REGIAO'
+    'NO_MUNICIPIO', 'CO_MUNICIPIO', 'NU_ANO_CENSO'
 ]
-df_escola = pd.read_csv(caminho_escola, encoding='latin1', sep=';', usecols=colunas_escola)
 
-df_escola_pb = df_escola[df_escola['SG_UF'] == 'PB'].copy()
-
+# Colunas da tabela de matrículas
 colunas_matricula = [
     'CO_ENTIDADE', 'QT_MAT_BAS', 'QT_MAT_INF', 'QT_MAT_FUND', 
     'QT_MAT_MED', 'QT_MAT_PROF', 'QT_MAT_EJA', 'QT_MAT_ESP'
 ]
-df_matricula = pd.read_csv(caminho_matricula, encoding='latin1', sep=';', usecols=colunas_matricula)
 
-df_final = pd.merge(df_escola_pb, df_matricula, on='CO_ENTIDADE', how='inner')
+# Estados das regiões Nordeste e Sudeste
+estados_nordeste_sudeste = [
+    'AL', 'BA', 'CE', 'MA', 'PB', 'PE', 'PI', 'RN', 'SE', # Nordeste
+    'ES', 'MG', 'RJ', 'SP'                               # Sudeste
+]
 
-df_final['QT_MAT_BAS'] = pd.to_numeric(df_final['QT_MAT_BAS'], errors='coerce').fillna(0)
+print("A carregar dados de matrícula...")
+df_matricula = pd.read_csv(caminho_matricula, encoding='latin1', sep=';', usecols=colunas_matricula, low_memory=False)
 
-df_top30 = df_final.sort_values(by='QT_MAT_BAS', ascending=False).head(30)
+# Tratar colunas numéricas de matrícula
+cols_num = ['QT_MAT_BAS', 'QT_MAT_INF', 'QT_MAT_FUND', 'QT_MAT_MED', 'QT_MAT_PROF', 'QT_MAT_EJA', 'QT_MAT_ESP']
+for col in cols_num:
+    if col in df_matricula.columns:
+        df_matricula[col] = pd.to_numeric(df_matricula[col], errors='coerce').fillna(0)
 
-df_top30.columns = df_top30.columns.str.lower()
+# Garantir que o diretório do banco de dados existe
+caminho_db.parent.mkdir(parents=True, exist_ok=True)
 
-df_top30.to_json(caminho_json, orient='records', force_ascii=False, indent=4)
+# Conexão com o SQLite
+conexao_sqlite = sqlite3.connect(caminho_db)
 
-print("Arquivo escolas_pb.json gerado com sucesso!")
+print("A processar escolas em blocos (chunksize = 100) e a salvar no SQLite...")
+chunk_size = 100
+total_registros = 0
+primeiro_lote = True
+
+# Leitura paginada do arquivo de escolas
+for chunk_escola in pd.read_csv(caminho_escola, encoding='latin1', sep=';', usecols=colunas_escola, chunksize=chunk_size, low_memory=False):
+    
+    # Filtrar apenas os estados do Nordeste e Sudeste
+    chunk_filtrado = chunk_escola[chunk_escola['SG_UF'].isin(estados_nordeste_sudeste)].copy()
+    
+    if chunk_filtrado.empty:
+        continue
+        
+    # Unir com os dados de matrícula correspondentes aos IDs deste bloco
+    df_merged = pd.merge(chunk_filtrado, df_matricula, on='CO_ENTIDADE', how='inner')
+    
+    if df_merged.empty:
+        continue
+        
+    # Converter os nomes das colunas para minúsculas (conforme padrão exigido)
+    df_merged.columns = df_merged.columns.str.lower()
+    
+    # Inserir no SQLite em lotes (append)
+    # No primeiro lote criamos a tabela (if_exists='replace'), nos seguintes apenas adicionamos (if_exists='append')
+    modo = 'replace' if primeiro_lote else 'append'
+    df_merged.to_sql('escolas_nordeste_sudeste', conexao_sqlite, if_exists=modo, index=False)
+    
+    total_registros += len(df_merged)
+    primeiro_lote = False
+
+# Fechar conexão com o banco
+conexao_sqlite.close()
+
+print(f"Processamento concluído com sucesso! Total de {total_registros} registros inseridos no SQLite.")
+print(f"Banco de dados gerado em: {caminho_db}")
