@@ -1,6 +1,6 @@
 import pandas as pd
-import sqlite3
 from pathlib import Path
+from sqlalchemy import create_engine
 
 # Caminhos dos arquivos
 diretorio_projeto = Path(__file__).resolve().parent
@@ -8,8 +8,16 @@ diretorio_microdados = diretorio_projeto / 'microdados_censo_escolar_2025_' / 'm
 caminho_escola = diretorio_microdados / 'Tabela_Escola_2025_V2.csv'
 caminho_matricula = diretorio_microdados / 'Tabela_Matricula_2025_V2.csv'
 
-# Caminho onde o banco SQLite será salvo
-caminho_db = diretorio_projeto / 'dados' / 'escolas_nordeste_sudeste.db'
+# Configurações de conexão com o PostgreSQL 
+DB_USER = "postgres"
+DB_PASSWORD = "12345"        
+DB_HOST = "localhost"           
+DB_PORT = "5435"                 
+DB_NAME = "instituicao_db"            
+
+# conexão do SQLAlchemy para PostgreSQL
+string_conexao = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+engine = create_engine(string_conexao)
 
 # Colunas da tabela de escolas
 colunas_escola = [
@@ -25,8 +33,10 @@ colunas_matricula = [
 
 # Estados das regiões Nordeste e Sudeste
 estados_nordeste_sudeste = [
-    'AL', 'BA', 'CE', 'MA', 'PB', 'PE', 'PI', 'RN', 'SE', # Nordeste
-    'ES', 'MG', 'RJ', 'SP'                               # Sudeste
+    'AL', 'BA', 'CE', 'MA', 'PB', 'PE', 'PI', 'RN', 'SE', 
+    
+    'ES', 'MG', 'RJ', 'SP'                               
+    
 ]
 
 print("A carregar dados de matrícula...")
@@ -38,13 +48,7 @@ for col in cols_num:
     if col in df_matricula.columns:
         df_matricula[col] = pd.to_numeric(df_matricula[col], errors='coerce').fillna(0)
 
-# Garantir que o diretório do banco de dados existe
-caminho_db.parent.mkdir(parents=True, exist_ok=True)
-
-# Conexão com o SQLite
-conexao_sqlite = sqlite3.connect(caminho_db)
-
-print("A processar escolas em blocos (chunksize = 100) e a salvar no SQLite...")
+print("A processar escolas em blocos e a salvar no PostgreSQL...")
 chunk_size = 100
 total_registros = 0
 primeiro_lote = True
@@ -64,19 +68,13 @@ for chunk_escola in pd.read_csv(caminho_escola, encoding='latin1', sep=';', usec
     if df_merged.empty:
         continue
         
-    # Converter os nomes das colunas para minúsculas (conforme padrão exigido)
+    # Converter os nomes das colunas para minúsculas (padrão recomendado no Postgres)
     df_merged.columns = df_merged.columns.str.lower()
     
-    # Inserir no SQLite em lotes (append)
-    # No primeiro lote criamos a tabela (if_exists='replace'), nos seguintes apenas adicionamos (if_exists='append')
     modo = 'replace' if primeiro_lote else 'append'
-    df_merged.to_sql('escolas_nordeste_sudeste', conexao_sqlite, if_exists=modo, index=False)
+    df_merged.to_sql('escolas_nordeste_sudeste', engine, if_exists=modo, index=False)
     
     total_registros += len(df_merged)
     primeiro_lote = False
 
-# Fechar conexão com o banco
-conexao_sqlite.close()
-
-print(f"Processamento concluído com sucesso! Total de {total_registros} registros inseridos no SQLite.")
-print(f"Banco de dados gerado em: {caminho_db}")
+print(f"Processamento concluído com sucesso! Total de {total_registros} registros inseridos no PostgreSQL.")
